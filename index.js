@@ -1,71 +1,120 @@
-require('dotenv').config()
-const express = require('express')
-const app = express()
-const cors = require('cors')
+require('dotenv').config();
+const express = require('express');
+const app = express();
+const cors = require('cors');
 const bodyParser = require('body-parser');
+const mongoose = require('mongoose');
+
+// Connect to DB
+mongoose.connect(process.env.MONGO_URI).catch((e) => console.log(e));
+mongoose.connection.on("error", (e) => {
+	console.log("Mongoose connection error: " + e);
+});
+
+// Data
+let userSchema = mongoose.Schema(
+	{
+		username: {
+			type: String,
+			required: true,
+		}
+	},
+	{
+		versionKey: false
+	}
+);
+let User = mongoose.model("User", userSchema);
+
+let exerciseSchema = mongoose.Schema(
+	{
+		username: {
+			type: String,
+			required: true
+		},
+		description: {
+			type: String,
+			required: true
+		},
+		duration: {
+			type: Number,
+			required: true
+		},
+		date: String,
+		userId: {
+			type: String,
+			required: true
+		}
+	},
+	{
+		versionKey: false
+	}
+);
+let Exercise = mongoose.model("Exercise", exerciseSchema);
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use(cors())
-app.use(express.static('public'))
+app.use(cors());
+app.use(express.static('public'));
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html')
+  res.sendFile(__dirname + '/views/index.html');
 });
 
-// Data
-let Users = [];
-let Exercises = new Map();
+// Date check helper function
+const checkDate = (date) => {
+    if (!date) {
+        return (new Date(Date.now())).toDateString();
+    } else {
+        const parts = date.split('-');
+        const year = parseInt(parts[0]);
+        const month = parseInt(parts[1]) - 1;
+        const day = parseInt(parts[2]);
 
-// Create Users
-app.route("/api/users").post((req, res) => {
-	let username = req.body.username;
-	let _id = Users.length;
-	res.json({
-		username: username,
-		_id: _id
-	});
-	Users.push({ username: username, id: _id });
-}).get((req, res) => {
-	res.json(Users);
-});
-
-// Helper function to add data to the map
-function addExerciseData(id, data) {
-	if (Exercises.get(id)) {
-		Exercises.get(id).push(data);
-	} else {
-		Exercises.set(id, [data]);
-	}
+        const utcDate = new Date(Date.UTC(year, month, day));
+        return new Date(utcDate.getTime() + utcDate.getTimezoneOffset() * 60000).toDateString();
+    }
 }
 
+// Create Users
+app.route("/api/users").post(async (req, res) => {
+	let username = req.body.username;
+	let user = await User.create({ username });
+	res.json(user);
+}).get(async (req, res) => {
+	let userList = await User.find();
+	res.json(userList);
+});
+
 // Add Exercise Data
-app.post("/api/users/:_id/exercises", (req, res) => {
+app.post("/api/users/:_id/exercises", async (req, res) => {
 	let description = req.body.description;
 	let duration = parseInt(req.body.duration);
-	let date = new Date(req.body.date || new Date());
-	let _id = req.params._id;
-	let username = Users[_id].username;
+	let date = checkDate(req.body.date);
+	let userId = req.params._id;
+	let user = await User.findById(userId).select("username");
 
-	res.json({
-		_id: _id,
-		username: username,
-		date: date.toDateString(),
-		duration: duration,
-		description: description
+	let exerciseData = await Exercise.create({
+		username: user.username,
+		description,
+		duration,
+		date,
+		userId: userId
 	});
-	addExerciseData(_id, {
-		description: description,
-		duration: duration,
-		date: date.toDateString()
+	return res.json({
+		_id: user._id,
+		username: user.username,
+		date: exerciseData.date,
+		duration: Number(exerciseData.duration),
+		description: exerciseData.description
 	});
 })
 
 // Check Exercise Logs
-app.get("/api/users/:_id/logs", (req, res) => {
-	let _id = req.params._id;
-	let username = Users[_id].username;
-	let count = Exercises.get(_id).length;
+app.get("/api/users/:_id/logs", async (req, res) => {
+	let userId = req.params._id;
+	let user = await User.findById(userId).select("username");
+	let count = await Exercise.find({ userId: userId }).exec();
+	count = count.length;
 
 	let from = false;
 	if (req.query.from !== "") {
@@ -80,24 +129,25 @@ app.get("/api/users/:_id/logs", (req, res) => {
 		limit = parseInt(req.query.limit);
 	} 
 
-	let log = Exercises.get(_id).filter((exercise) => {
+	let log = await Exercise.find({ userId: userId }).exec();
+	log = log.filter((exercise) => {
 		let exerciseDate = new Date(exercise.date);
 		if (from && exerciseDate < from) {
-			return false
+			return false;
 		}
 		if (to && exerciseDate > to) {
-			return false
+			return false;
 		}
 		return true;
-	})
+	});
 
 	if (limit && log.length > limit) {
 		log = log.splice(0, limit);
 	}
 
 	res.json({
-		_id: _id,
-		username: username,
+		_id: userId,
+		username: user.username,
 		count: count,
 		log
 	});
